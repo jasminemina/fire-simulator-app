@@ -1,57 +1,77 @@
-import streamlit as st
-import matplotlib.pyplot as plt
-from datetime import datetime
+from flask import Flask, render_template, request, jsonify
+import numpy as np
+import plotly.graph_objs as go
+import plotly.express as px
 
-# --- FIRE logic ---
-def calculate_growth(initial, monthly, rate, inflation, target, adjust_inflation=True):
-    balance = initial
-    contributions = 0
-    history = []
-    months = 0
-    crossover = None
+app = Flask(__name__)
 
-    while balance < target and months < 1200:
-        balance *= (1 + rate / 12)
-        balance += monthly
-        contributions += monthly
-        if adjust_inflation:
-            balance /= (1 + inflation / 12)
-        history.append((months / 12, balance))
-        if crossover is None and balance - initial > contributions:
-            crossover = months / 12
-        months += 1
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    return history, months / 12, crossover
+@app.route('/calculate', methods=['POST'])
+def calculate():
+    # Get inputs from the user
+    initial_investment = float(request.form['initial_investment'])
+    monthly_contribution = float(request.form['monthly_contribution'])
+    annual_income = float(request.form['annual_income'])
+    years = int(request.form['years'])
+    inflation_rate = float(request.form['inflation_rate'])
+    interest_rate = float(request.form['interest_rate'])
 
-def fire_number_calc(spend, rate):
-    return spend / (rate / 100)
+    # Constants
+    withdrawal_rate = 0.04
+    target_portfolio = annual_income / withdrawal_rate
+    monthly_rate = (1 + interest_rate / 100) / (1 + inflation_rate / 100) - 1
+    months = years * 12
 
-# --- UI ---
-st.set_page_config(page_title="FIRE Calculator", layout="centered")
+    # Calculate portfolio value over time
+    portfolio_values = []
+    required_values = []
+    balance = initial_investment
+    invested = initial_investment
+    for month in range(months + 1):
+        balance = balance * (1 + monthly_rate) + (monthly_contribution if month > 0 else 0)
+        invested += monthly_contribution
+        portfolio_values.append(balance)
+        required_values.append(target_portfolio)
 
-st.title("FIRE Simulator")
+    # Calculate the required monthly contribution to meet the target in the desired time
+    required_monthly = (target_portfolio - initial_investment * (1 + monthly_rate) ** months) / (((1 + monthly_rate) ** months - 1) / monthly_rate)
 
-st.header("Inputs")
-initial = st.number_input("Initial Investment ($)", value=55000, step=1000)
-monthly = st.number_input("Monthly Contribution ($)", value=2000, step=100)
-annual_return = st.slider("Annual Return (%)", 0.0, 15.0, 7.0)
-inflation = st.slider("Inflation Rate (%)", 0.0, 10.0, 2.5)
-target = st.number_input("Target FIRE Amount ($)", value=3000000, step=100000)
-withdraw_rate = st.slider("Withdrawal Rate (%)", 2.0, 6.0, 4.0)
-spend = st.number_input("Your Desired Annual Spending ($)", value=100000)
-adjust = st.checkbox("Adjust for Inflation", value=True)
+    # Create the graph
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=np.arange(0, months + 1) / 12, y=portfolio_values, mode='lines', name='Your Portfolio', line=dict(color='blue', width=3)))
+    fig.add_trace(go.Scatter(x=np.arange(0, months + 1) / 12, y=required_values, mode='lines', name='Required Portfolio', line=dict(color='green', width=2, dash='dash')))
+    
+    # Add the goal reached marker
+    goal_reached_month = next((i for i, v in enumerate(portfolio_values) if v >= target_portfolio), None)
+    if goal_reached_month is not None:
+        fig.add_trace(go.Scatter(x=[goal_reached_month / 12], y=[target_portfolio], mode='markers', name='Goal Reached', marker=dict(color='red', size=10)))
+    
+    # Customize the layout
+    fig.update_layout(
+        title='FIRE Goal Progression',
+        xaxis_title='Years',
+        yaxis_title='Portfolio Value ($)',
+        showlegend=True
+    )
 
-# --- Calculate ---
-fire_number = fire_number_calc(spend, withdraw_rate)
-history, years, crossover = calculate_growth(
-    initial, monthly, annual_return/100, inflation/100, target, adjust_inflation=adjust
-)
+    # Generate graph URL
+    graph_html = fig.to_html(full_html=False)
 
-# --- Output ---
-st.header("Results")
-st.metric("Your FIRE Number", f"${fire_number:,.0f}")
-st.metric("Years to Reach Target", f"{years:.1f}")
-if crossover:
-    st.metric("Compound > Contributions After", f"{crossover:.1f} years")
+    # Generate summary message
+    final_balance = portfolio_values[-1]
+    adjustment_message = ''
+    if final_balance >= target_portfolio:
+        adjustment_message = f"🎉 Great news! You will reach your FIRE goal in approximately {goal_reached_month // 12} years!"
+    else:
+        adjustment_message = f"🚨 You will be short of your FIRE goal. To reach your goal, you need to increase your monthly contribution to ${required_monthly:.2f}."
 
-st.line_chart({ "Portfolio Value": [val for _, val in history] })
+    return jsonify({
+        'graph_html': graph_html,
+        'adjustment_message': adjustment_message
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)
